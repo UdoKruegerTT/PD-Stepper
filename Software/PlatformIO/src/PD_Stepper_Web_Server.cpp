@@ -126,16 +126,16 @@ unsigned long lastStep = 0;
 // narrow VACTUAL "sweet spot" (good: |slider|=30..50 i.e. VACTUAL ~1000..1600
 // at microsteps=32; worse above and below). We pick speeds inside that band.
 static const int   FILTER_NUM_POSITIONS   = 6;
-static const float FILTER_STOP_TOLERANCE  = 3.0f;    // deg (wider to avoid hunting)
-static const float FILTER_DECEL_RANGE     = 20.0f;   // deg
-// VACTUAL units. TMC2209 has trouble outside this window on this board/motor.
-// Both FAST and SLOW stay inside |VACTUAL| 900..1600 which tested bidirectionally.
+static const float FILTER_STOP_TOLERANCE  = 4.0f;    // deg
+// Single cruise velocity; the motor stalls below ~900 VACTUAL so any decel
+// step downward would leave it stuck in the deceleration band. At 1500
+// VACTUAL ≈ 55 deg/s, one 10 ms poll moves the wheel ~0.5 deg, so the stop
+// threshold is caught cleanly without a separate slow phase.
 static const int32_t FILTER_VELOCITY_FAST = 1500;
-static const int32_t FILTER_VELOCITY_SLOW = 1000;
-// Sign of motor motion relative to encoder angle: positive VACTUAL produces
-// a *decrease* in encoder angle on this board. Flip to +1 if your wiring
-// runs the same way.
-static const int   FILTER_MOTOR_ENC_SIGN  = -1;
+// Sign of motor motion relative to encoder angle: on this board, after the
+// motor rewiring a positive VACTUAL produces an *increase* in encoder
+// angle. Change to -1 if you flip the phase wiring again.
+static const int   FILTER_MOTOR_ENC_SIGN  = +1;
 
 volatile bool   filterMotionActive  = false;
 volatile float  filterTargetAngle   = 0.0f;
@@ -269,27 +269,6 @@ static inline float normalizeAngleDeg(float a){
 static int32_t filterCurrentVelocity = 0;
 static unsigned long filterLastServiceMs = 0;
 
-// Probe the sign of (motor-direction → encoder-direction) by running the
-// motor at a small velocity for a fixed time and measuring which way the
-// encoder actually went. Caches the result in filterMotorSign.
-// Returns +1 or -1. Returns last known sign on stall.
-static int filterProbeMotorSign(){
-  readEncoder();
-  float angleBefore = getFilterAngleDeg();
-  stepper_driver.moveAtVelocity(FILTER_VELOCITY_SLOW);
-  delay(250);
-  readEncoder();
-  float angleAfter = getFilterAngleDeg();
-  stepper_driver.moveAtVelocity(0);
-  float moved = shortestAngleDeltaDeg(angleAfter, angleBefore);
-  if (fabsf(moved) < 2.0f) return FILTER_MOTOR_ENC_SIGN;  // stalled — keep cached
-  // Positive VACTUAL produced positive encoder delta → sign = +1, else -1.
-  return (moved > 0) ? 1 : -1;
-}
-
-// Cached auto-detected sign (initialized from the compile-time default).
-static int filterMotorSignCached = FILTER_MOTOR_ENC_SIGN;
-
 // Kick off closed-loop motion toward filterTargetAngle at FAST speed.
 // serviceFilterMotion() downshifts to SLOW in the final FILTER_DECEL_RANGE
 // degrees and stops when within FILTER_STOP_TOLERANCE.
@@ -304,20 +283,7 @@ static void filterStartMotionToTarget(){
     filterMotionActive = false;
     return;
   }
-  // Probe motor direction — the TMC2209 on this board has shown
-  // non-deterministic sign-of-VACTUAL vs encoder-direction between resets.
-  filterMotorSignCached = filterProbeMotorSign();
-  // Re-read after probe.
-  readEncoder();
-  delta = shortestAngleDeltaDeg(filterTargetAngle, getFilterAngleDeg());
-  if (fabsf(delta) <= FILTER_STOP_TOLERANCE) {
-    stepper_driver.moveAtVelocity(0);
-    filterCurrentVelocity = 0;
-    filterMotionActive = false;
-    return;
-  }
-  int32_t speed = (fabsf(delta) < FILTER_DECEL_RANGE) ? FILTER_VELOCITY_SLOW : FILTER_VELOCITY_FAST;
-  int32_t v = speed * (int32_t)((delta > 0) ? 1 : -1) * filterMotorSignCached;
+  int32_t v = FILTER_VELOCITY_FAST * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
   stepper_driver.moveAtVelocity(v);
   filterCurrentVelocity = v;
   filterMotionActive = true;
@@ -376,7 +342,7 @@ void handleFilterAction(){
 static void serviceFilterMotion(){
   if (!filterMotionActive) return;
   unsigned long now = millis();
-  if (now - filterLastServiceMs < 20) return;
+  if (now - filterLastServiceMs < 10) return;
   filterLastServiceMs = now;
 
   readEncoder();
@@ -390,8 +356,7 @@ static void serviceFilterMotion(){
     filterMotionActive = false;
     return;
   }
-  int32_t speed = (dist < FILTER_DECEL_RANGE) ? FILTER_VELOCITY_SLOW : FILTER_VELOCITY_FAST;
-  int32_t v = speed * (int32_t)((delta > 0) ? 1 : -1) * filterMotorSignCached;
+  int32_t v = FILTER_VELOCITY_FAST * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
   if (v != filterCurrentVelocity) {
     stepper_driver.moveAtVelocity(v);
     filterCurrentVelocity = v;
@@ -894,6 +859,12 @@ void readSettings(){
     homeAngle = preferences.getString("homeAngle", "0");
     preferences.end();
   }
+
+  // Safety: always start with the driver DISABLED after a reboot. The user
+  // must re-enable via the web UI. Prevents the motor from immediately
+  // drawing current on boot with an unknown mechanical state (which has
+  // tripped the USB-PD negotiation on this board before).
+  enabled1 = "disabled";
 }
 
 
