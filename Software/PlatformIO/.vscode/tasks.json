@@ -1,0 +1,59 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PD-Stepper: Upload USB (COM6)",
+            "type": "shell",
+            "command": "C:\\Users\\Udo\\.platformio\\penv\\Scripts\\platformio.exe",
+            "args": [
+                "run",
+                "--target", "upload",
+                "--environment", "esp32-s3",
+                "--upload-port", "COM6"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "PD-Stepper: Upload WLAN (OTA)",
+            "type": "shell",
+            "command": "C:\\Users\\Udo\\.platformio\\penv\\Scripts\\platformio.exe",
+            "args": [
+                "run",
+                "--target", "upload",
+                "--environment", "esp32-s3-ota"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "PD-Stepper: Build only",
+            "type": "shell",
+            "command": "C:\\Users\\Udo\\.platformio\\penv\\Scripts\\platformio.exe",
+            "args": [
+                "run",
+                "--environment", "esp32-s3"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}
