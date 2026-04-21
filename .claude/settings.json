@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ping -n 3 192.168.4.1)",
+      "Bash(python test_filter_positions.py)",
+      "Bash(uv run *)",
+      "Bash(uv add *)",
+      "Bash(pio run *)",
+      "Bash(netsh advfirewall *)",
+      "Bash(powershell -Command \"Start-Process -FilePath 'netsh' -ArgumentList 'advfirewall firewall add rule name=\\\\\"PlatformIO OTA\\\\\" dir=in action=allow protocol=UDP localport=3232' -Verb RunAs -Wait\")",
+      "Bash(awk 'NR>=450 && NR<=600' \"e:\\\\TTBV\\\\Python\\\\PD-Stepper\\\\Software\\\\PlatformIO\\\\src\\\\index_html.h\")",
+      "Bash(awk 'NR>=473 && NR<=545' \"e:\\\\TTBV\\\\Python\\\\PD-Stepper\\\\Software\\\\PlatformIO\\\\src\\\\index_html.h\")",
+      "Bash(awk 'NR>=546 && NR<=815' \"e:\\\\TTBV\\\\Python\\\\PD-Stepper\\\\Software\\\\PlatformIO\\\\src\\\\index_html.h\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'  {i+1}. slot={r[\\\\\"pos\\\\\"]+1} target={r[\\\\\"target\\\\\"]:.0f}° actual={r[\\\\\"actual\\\\\"]:.1f}° err={r[\\\\\"error\\\\\"]:.2f}° {\\\\\"TIMEOUT\\\\\" if r[\\\\\"timeout\\\\\"] else str\\(round\\(r[\\\\\"settle\\\\\"],2\\)\\)+\\\\\"s\\\\\"}'\\) for i,r in enumerate\\(d['results']\\)]; errs=[r['error'] for r in d['results'] if not r['timeout']]; print\\(f'avg={sum\\(errs\\)/len\\(errs\\):.2f}° max={max\\(errs\\):.2f}°'\\) if errs else None\")",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'  {i+1}. slot={r[\\\\\"pos\\\\\"]+1} target={r[\\\\\"target\\\\\"]:.0f}° actual={r[\\\\\"actual\\\\\"]:.1f}° err={r[\\\\\"error\\\\\"]:.2f}° {\\\\\"TIMEOUT\\\\\" if r[\\\\\"timeout\\\\\"] else str\\(round\\(r[\\\\\"settle\\\\\"],2\\)\\)+\\\\\"s\\\\\"}'\\) for i,r in enumerate\\(d['results']\\)]; errs=[r['error'] for r in d['results'] if not r['timeout']]; print\\(f'avg={sum\\(errs\\)/len\\(errs\\):.2f}° max={max\\(errs\\):.2f}°'\\) if errs else None; print\\('running='+str\\(d['running']\\), 'done='+str\\(d['done']\\)\\)\")",
+      "Bash(ping -n 2 192.168.4.1)"
+    ]
+  }
+}

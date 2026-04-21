@@ -1,0 +1,19 @@
+# TTBV Devices – Abhängigkeiten
+# Installation:  uv pip install -r requirements.txt
+
+# Geräte-Kommunikation
+pymeasure
+pyserial
+
+# Numerik
+numpy
+
+# GUI
+PySide6
+
+# Spektrum-Plot
+matplotlib
+
+# tpow: internes Paket für den USB9097-Adapter (benötigt von Temp18B20)
+# Separat installieren, z.B.:
+#   uv pip install -e <pfad-zu-tpow>

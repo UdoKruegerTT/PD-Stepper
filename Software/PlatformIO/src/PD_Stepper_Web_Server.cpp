@@ -126,16 +126,19 @@ unsigned long lastStep = 0;
 // narrow VACTUAL "sweet spot" (good: |slider|=30..50 i.e. VACTUAL ~1000..1600
 // at microsteps=32; worse above and below). We pick speeds inside that band.
 static const int   FILTER_NUM_POSITIONS   = 6;
-static const float FILTER_STOP_TOLERANCE  = 4.0f;    // deg
-// Single cruise velocity; the motor stalls below ~900 VACTUAL so any decel
-// step downward would leave it stuck in the deceleration band. At 1500
-// VACTUAL ≈ 55 deg/s, one 10 ms poll moves the wheel ~0.5 deg, so the stop
-// threshold is caught cleanly without a separate slow phase.
-static const int32_t FILTER_VELOCITY_FAST = 1500;
-// Sign of motor motion relative to encoder angle: on this board, after the
-// motor rewiring a positive VACTUAL produces an *increase* in encoder
-// angle. Change to -1 if you flip the phase wiring again.
-static const int   FILTER_MOTOR_ENC_SIGN  = +1;
+static const float FILTER_STOP_TOLERANCE  = 0.5f;    // deg
+// Two-phase velocity profile: cruise fast, then slow down for final approach.
+// FAST ≈ 365 deg/s — roughly 5× the previous 2000 setting.
+// SLOW ≈ 36 deg/s — used inside DECEL_RANGE for precise braking.
+// At SLOW + 5 ms poll cadence one step ≈ 0.18 deg < 0.5 deg stop tolerance.
+static const int32_t FILTER_VELOCITY_FAST  = 4000;   // ~320 deg/s — stalls at ≥4800
+static const int32_t FILTER_VELOCITY_SLOW  = 1000;
+static const float   FILTER_DECEL_RANGE    = 4.0f;   // deg
+// Sign of motor motion relative to encoder angle.
+// Empirically confirmed: positive VACTUAL *decreases* encoder angle on this
+// board (motor phase order inverted). Setting -1 corrects the closed-loop
+// direction so the wheel moves toward the target rather than away from it.
+static const int   FILTER_MOTOR_ENC_SIGN  = -1;
 
 volatile bool   filterMotionActive  = false;
 volatile float  filterTargetAngle   = 0.0f;
@@ -153,9 +156,25 @@ signed long filterEncoderZero = 0;      // encoder counts that correspond to 0 d
 signed long filterHomeSetPoint = 0;     // CurrentPosition value at filter position 0
 
 volatile bool  filterUpdatePending = false;
-volatile int   filterAction = 0;   // 1=goto_pos, 2=step, 3=set_zero, 4=goto_angle
+volatile int   filterAction = 0;   // 1=goto_pos, 2=step, 3=set_zero, 4=goto_angle, 5=goto_home, 6=rt_start
 volatile int   filterParamInt = 0;
 volatile float filterParamFloat = 0.0f;
+
+// Random position test state machine
+static const int RT_MOVES = 8;
+struct RtResult {
+  int8_t pos;
+  float  target_deg, actual_deg, error_deg, settle_s;
+  bool   timeout;
+};
+static RtResult  rtResults[RT_MOVES];
+volatile int     rtStep    = 0;    // written by loop(), read by web callback
+volatile bool    rtRunning = false;
+volatile bool    rtDone    = false;
+static int       rtPrevPos = -1;
+static bool      rtWaiting = false;
+static uint32_t  rtStart   = 0;
+static uint32_t  rtRandSeed = 12345;
 
 // Forward declarations needed when building as a regular C++ translation unit.
 String readPGState();
@@ -173,6 +192,7 @@ void readEncoder();
 void configureSettings();
 void readSettings();
 void writeSettings();
+void serviceRandomTest();
 
 //read state of PG pin to display on webpage
 String readPGState(){
@@ -277,13 +297,15 @@ static void filterStartMotionToTarget(){
   setPoint = CurrentPosition;
   readEncoder();
   float delta = shortestAngleDeltaDeg(filterTargetAngle, getFilterAngleDeg());
-  if (fabsf(delta) <= FILTER_STOP_TOLERANCE) {
+  float dist  = fabsf(delta);
+  if (dist <= FILTER_STOP_TOLERANCE) {
     stepper_driver.moveAtVelocity(0);
     filterCurrentVelocity = 0;
     filterMotionActive = false;
     return;
   }
-  int32_t v = FILTER_VELOCITY_FAST * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
+  int32_t spd = (dist <= FILTER_DECEL_RANGE) ? FILTER_VELOCITY_SLOW : FILTER_VELOCITY_FAST;
+  int32_t v = spd * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
   stepper_driver.moveAtVelocity(v);
   filterCurrentVelocity = v;
   filterMotionActive = true;
@@ -330,6 +352,17 @@ void handleFilterAction(){
       filterStartMotionToTarget();
       break;
     }
+    case 6: { // rt_start: kick off the random position test
+      if (!rtRunning) {
+        rtRandSeed = (uint32_t)millis();
+        rtStep     = 0;
+        rtDone     = false;
+        rtPrevPos  = -1;
+        rtWaiting  = false;
+        rtRunning  = true;
+      }
+      break;
+    }
     default:
       break;
   }
@@ -342,7 +375,7 @@ void handleFilterAction(){
 static void serviceFilterMotion(){
   if (!filterMotionActive) return;
   unsigned long now = millis();
-  if (now - filterLastServiceMs < 10) return;
+  if (now - filterLastServiceMs < 5) return;
   filterLastServiceMs = now;
 
   readEncoder();
@@ -356,11 +389,59 @@ static void serviceFilterMotion(){
     filterMotionActive = false;
     return;
   }
-  int32_t v = FILTER_VELOCITY_FAST * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
+  int32_t spd = (dist <= FILTER_DECEL_RANGE) ? FILTER_VELOCITY_SLOW : FILTER_VELOCITY_FAST;
+  int32_t v = spd * (int32_t)((delta > 0) ? 1 : -1) * FILTER_MOTOR_ENC_SIGN;
   if (v != filterCurrentVelocity) {
     stepper_driver.moveAtVelocity(v);
     filterCurrentVelocity = v;
   }
+}
+
+// Simple LCG — avoids stdlib rand(), picks a slot different from prev.
+static int rtRandNext(int prev) {
+  rtRandSeed = rtRandSeed * 1664525UL + 1013904223UL;
+  int p = (int)((rtRandSeed >> 16) % 6);
+  if (p == prev) p = (p + 1) % 6;
+  return p;
+}
+
+// Non-blocking random test state machine. Called every loop() after
+// serviceFilterMotion() so filterMotionActive is already up to date.
+void serviceRandomTest() {
+  if (!rtRunning) return;
+
+  if (rtWaiting) {
+    float elapsed = (float)(millis() - rtStart) / 1000.0f;
+    bool  timedOut = elapsed > 5.0f;
+    if (filterMotionActive && !timedOut) return;   // still moving, not timed out
+
+    if (timedOut && filterMotionActive) {
+      stepper_driver.moveAtVelocity(0);
+      filterMotionActive    = false;
+      filterCurrentVelocity = 0;
+    }
+    readEncoder();
+    float actual = getFilterAngleDeg();
+    float target = rtResults[rtStep].target_deg;
+    float err    = fabsf(shortestAngleDeltaDeg(target, actual));
+    rtResults[rtStep].actual_deg = actual;
+    rtResults[rtStep].error_deg  = err;
+    rtResults[rtStep].settle_s   = elapsed;
+    rtResults[rtStep].timeout    = timedOut;
+    rtStep++;
+    rtWaiting = false;
+    if (rtStep >= RT_MOVES) { rtRunning = false; rtDone = true; return; }
+  }
+
+  // Kick off the next move.
+  int pos = rtRandNext(rtPrevPos);
+  rtPrevPos                = pos;
+  rtResults[rtStep].pos        = (int8_t)pos;
+  rtResults[rtStep].target_deg = (float)pos * 60.0f;
+  filterTargetAngle        = rtResults[rtStep].target_deg;
+  filterStartMotionToTarget();
+  rtStart   = millis();
+  rtWaiting = true;
 }
 
 String readTMCStatus(){
@@ -538,7 +619,12 @@ void setup() {
                " filterParamInt=" + String(filterParamInt) +
                " microsteps=" + microsteps +
                " total_encoder_counts=" + String(total_encoder_counts) +
-               " filterEncoderZero=" + String(filterEncoderZero);
+               " filterEncoderZero=" + String(filterEncoderZero) +
+               " rtRunning=" + String((int)rtRunning) +
+               " rtDone=" + String((int)rtDone) +
+               " rtStep=" + String(rtStep) +
+               " rtWaiting=" + String((int)rtWaiting) +
+               " filterMotionActive=" + String((int)filterMotionActive);
     request->send(200, "text/plain", s);
   });
   server.on("/filter/angle", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -550,6 +636,14 @@ void setup() {
   server.on("/filter/raw_angle", HTTP_GET, [](AsyncWebServerRequest *request){
     readEncoder();
     request->send(200, "text/plain", String(getRawEncoderAngleDeg(), 1));
+  });
+
+  // Register more-specific routes BEFORE the /filter catch-all POST so that
+  // ESPAsyncWebServer's first-match routing selects the right handler.
+  server.on("/filter/randomtest/start", HTTP_POST, [](AsyncWebServerRequest *request){
+    filterAction        = 6;
+    filterUpdatePending = true;
+    request->send(200);
   });
 
   server.on("/filter", HTTP_POST, [](AsyncWebServerRequest *request){
@@ -581,9 +675,34 @@ void setup() {
         filterParamFloat = a;
         filterAction = 5;
         filterUpdatePending = true;
+      } else if (action == "randomtest_start") {
+        filterAction = 6;
+        filterUpdatePending = true;
       }
     }
     request->send(200);
+  });
+
+  server.on("/filter/randomtest/status", HTTP_GET, [](AsyncWebServerRequest *request){
+    String j = "{\"running\":";
+    j += rtRunning ? "true" : "false";
+    j += ",\"done\":";
+    j += rtDone ? "true" : "false";
+    j += ",\"total\":";   j += String(RT_MOVES);
+    j += ",\"count\":";   j += String(rtStep);
+    j += ",\"results\":[";
+    for (int i = 0; i < rtStep; i++) {
+      if (i > 0) j += ",";
+      j += "{\"pos\":"     + String(rtResults[i].pos)              +
+           ",\"target\":"  + String(rtResults[i].target_deg, 1)    +
+           ",\"actual\":"  + String(rtResults[i].actual_deg, 1)    +
+           ",\"error\":"   + String(rtResults[i].error_deg,  2)    +
+           ",\"settle\":"  + String(rtResults[i].settle_s,   2)    +
+           ",\"timeout\":" + String(rtResults[i].timeout ? "true" : "false") +
+           "}";
+    }
+    j += "]}";
+    request->send(200, "application/json", j);
   });
 
   // Route to handle slider position update
@@ -675,12 +794,15 @@ void loop() {
   }
 
   if (filterUpdatePending) {
-    handleFilterAction();
+    if (filterAction == 6 || !rtRunning) {
+      handleFilterAction();
+    }
     filterUpdatePending = false;
   }
 
   // Closed-loop stop-on-target for the filter wheel.
   serviceFilterMotion();
+  serviceRandomTest();
 
   if (millis() - lastEncRead >= mainFreq){ //main loop
     lastEncRead = millis();
@@ -860,11 +982,9 @@ void readSettings(){
     preferences.end();
   }
 
-  // Safety: always start with the driver DISABLED after a reboot. The user
-  // must re-enable via the web UI. Prevents the motor from immediately
-  // drawing current on boot with an unknown mechanical state (which has
-  // tripped the USB-PD negotiation on this board before).
-  enabled1 = "disabled";
+  // Keep the saved enable state but the actual driver.enable() is deferred
+  // until the PG pin asserts in loop(), so the USB-PD negotiation always
+  // completes before the motor draws current.
 }
 
 

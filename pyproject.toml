@@ -1,0 +1,14 @@
+[project]
+name = "pd-stepper"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pymeasure>=0.15.0",
+    "pyserial>=3.5",
+    "pyside6>=6.11.0",
+    "requests>=2.33.1",
+]

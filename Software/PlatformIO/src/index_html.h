@@ -247,7 +247,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       background-color: white;
       -webkit-transition: .4s;
       transition: .4s;
-      border-radius: 50%;
+      border-radius: 50%%;
     }
 
     input:checked + .slider {
@@ -312,6 +312,13 @@ const char index_html[] PROGMEM = R"rawliteral(
       text-align: center;
       margin: 8px 0;
     }
+
+    #rt-results table { width:100%%; border-collapse:collapse; margin-top:6px; }
+    #rt-results th, #rt-results td { padding:3px 6px; text-align:right; border-bottom:1px solid #383838; font-size:12px; }
+    #rt-results th { color:#fc4903; font-size:11px; text-align:center; }
+    #rt-results td:first-child { text-align:center; }
+    .rt-ok  { color:#2ecc71; }
+    .rt-bad { color:#e74c3c; }
 
   </style>
   
@@ -537,11 +544,19 @@ const char index_html[] PROGMEM = R"rawliteral(
       <button class="pos-button" type="button" onclick="filterStep(1)">Forward &#9654;</button>
     </div>
 
-  </div>
+    <hr>
+
+    <h2>Random Test</h2>
+    <div class="filter-row">
+      <button class="pos-button" type="button" id="rt-btn" onclick="startRandomTest()">&#9654; Run Test</button>
+      <span id="rt-status" style="margin-left:12px;font-size:13px;color:#aaa;"></span>
+    </div>
+    <div id="rt-results"></div>
 
   </div>
 
-</body></html>
+  </div>
+
 
 <script>
   /* Auto fill dropdowns with saved values */ 
@@ -759,8 +774,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   }
 
   /* Shortest signed delta in (-180, +180] between two angles.
-     NB: single %% is escaped to % by the ESPAsyncWebServer template engine;
-     also JS's "%" is a remainder (keeps sign), not a true modulo, so we
+     NB: single %% is escaped to %% by the ESPAsyncWebServer template engine;
+     also JS is a remainder (not true modulo), so we
      normalize by adding 540 before taking the remainder. */
   function shortestAngleDelta(target, current) {
     return ((target - current) %% 360 + 540) %% 360 - 180;
@@ -809,9 +824,76 @@ const char index_html[] PROGMEM = R"rawliteral(
     xhttp.send();
   }, 250);
 
+
+  /* Random position test */
+  var rtPollTimer = null;
+  function startRandomTest() {
+    var btn = document.getElementById('rt-btn');
+    btn.disabled = true;
+    document.getElementById('rt-status').textContent = 'Starting…';
+    document.getElementById('rt-results').innerHTML = '';
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/filter', true);
+    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4) {
+        if (rtPollTimer) clearInterval(rtPollTimer);
+        rtPollTimer = setInterval(pollRandomTest, 400);
+      }
+    };
+    xhr.send('action=randomtest_start');
+  }
+  function pollRandomTest() {
+    var xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        var d = JSON.parse(this.responseText);
+        renderRandomTest(d);
+        if (!d.running) {
+          clearInterval(rtPollTimer); rtPollTimer = null;
+          document.getElementById('rt-btn').disabled = false;
+          document.getElementById('rt-status').textContent = d.done ? 'Done' : '';
+        } else {
+          document.getElementById('rt-status').textContent = d.count + ' / ' + d.total;
+        }
+      }
+    };
+    xhr.open('GET', '/filter/randomtest/status', true);
+    xhr.send();
+  }
+  function renderRandomTest(d) {
+    if (!d.results.length) { document.getElementById('rt-results').innerHTML = ''; return; }
+    var html = '<table><tr><th>#</th><th>Slot</th><th>Target</th><th>Actual</th><th>Error</th><th>Time</th></tr>';
+    for (var i = 0; i < d.results.length; i++) {
+      var r  = d.results[i];
+      var ec = r.timeout ? 'rt-bad' : (r.error <= 0.5 ? 'rt-ok' : 'rt-bad');
+      var t  = r.timeout ? 'TIMEOUT' : (r.settle.toFixed(2) + 's');
+      html += '<tr><td>' + (i+1) + '</td>' +
+              '<td>' + (r.pos+1) + '</td>' +
+              '<td>' + r.target.toFixed(1) + '&deg;</td>' +
+              '<td>' + r.actual.toFixed(1) + '&deg;</td>' +
+              '<td class="' + ec + '">' + r.error.toFixed(2) + '&deg;</td>' +
+              '<td>' + t + '</td></tr>';
+    }
+    html += '</table>';
+    if (d.done && d.results.length) {
+      var sum = 0, mx = 0, tos = 0;
+      for (var i = 0; i < d.results.length; i++) {
+        sum += d.results[i].error;
+        if (d.results[i].error > mx) mx = d.results[i].error;
+        if (d.results[i].timeout) tos++;
+      }
+      html += '<div style="font-size:11px;color:#aaa;margin-top:4px">avg <b>' +
+              (sum/d.results.length).toFixed(2) + '&deg;</b> &nbsp; max <b>' +
+              mx.toFixed(2) + '&deg;</b>';
+      if (tos) html += ' &nbsp; <span class="rt-bad">timeouts: ' + tos + '</span>';
+      html += '</div>';
+    }
+    document.getElementById('rt-results').innerHTML = html;
+  }
+
 </script>
-
-
+</body></html>
 
 
 
